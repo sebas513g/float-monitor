@@ -5,7 +5,7 @@ codeuri = "C:\\Users\\sebas\\automated_ai_solutions\\AWS\\Float Monitor\\hello_w
 runtime = "python3.13"
 architecture = "x86_64"
 handler = "app.lambda_handler"
-manifest_hash = "22b6574c402771bf322e10f91f5f0b8a"
+manifest_hash = "1c83055ea067bac0988f34f55d6a7968"
 packagetype = "Zip"
 functions = ["HelloWorldFunction"]
 

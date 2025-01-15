@@ -3,3 +3,5 @@ boto3
 pandas
 bs4
 datetime
+yfinance
+

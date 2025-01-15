@@ -1,5 +1,5 @@
 {
-  "ticker": "whlr",
+  "ticker": "phio",
   "body": "{\"message\": \"hello world\"}",
   "resource": "/hello",
   "path": "/hello",

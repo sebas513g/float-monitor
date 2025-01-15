@@ -4,6 +4,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import date
 from dateutil.relativedelta import relativedelta
+import yfinance as yf
 import json
 
 # This function will fetch a JSON object from a .json file    
@@ -131,6 +132,7 @@ def get_all_filing_submissions(ticker, tickers_json):
     sec_filings_metadata_url = get_filings_metadata_url(ticker=ticker.upper(), tickers_json=tickers_json)
 
     # Connecting to SEC API
+
     response = requests.get(sec_filings_metadata_url, headers=const.HTTP_REQUEST_USER_AGENT).json()
 
     metadata = response['filings']['recent']
@@ -163,7 +165,9 @@ def get_latest_filings(filings_df, filed_after_date = None):
 
     return filings_df[(filings_df['filingDate'] >= filed_after_date) & filings_df['form'].isin(const.FORMS_OF_INTEREST)]
 
-
+"""
+    FUNCTION NOT CURRENTLY IN USE
+"""
 def get_single_filing_url(item, cik_number):
     return const.SINGLE_FILING_BASE_URL + str(cik_number) + "/" + item["accessionNumber"].replace("-", "") + "/" + item["primaryDocument"]
 
@@ -187,6 +191,8 @@ def extract_text(content):
 
 """
     Retrieves company facts from SEC API
+
+    FUNCTION NOT CURRENTLY IN USE
 """
 def get_company_facts(ticker, tickers_json):
     company_facts_url = const.COMPANY_FACTS_BASE_URL + get_cik_number(ticker = ticker.upper(), tickers_json = tickers_json) + ".json"
@@ -206,6 +212,7 @@ def get_company_facts(ticker, tickers_json):
     -------
     A dictionary containing the source and float number for 4 different sources. 
     Here is an example of an item from the dict output: {"source": "Yahoo! Finance", "float": 14,250,000}
+
 """
 def get_float(ticker):
     url = const.FLOAT_TRACKING_BASE_URL + ticker.upper()
@@ -226,7 +233,18 @@ def get_float(ticker):
     return float_dict
 
 """
+    Parameters
+    ----------
+    float_dict: dict, required
+        Dictionary containing the float number from different web sources. This dictionary will have the following structure (defined in constants.py):
+        {
+            "source": "Yahoo! Finance",
+            "float": 1348092143,
+        }
 
+    Returns
+    -------
+    The average float. Calculated by adding the floats of all different sources together, then dividing by the number of sources available.
 """
 def calculate_avg_float(float_dict):
     num_sources = 0
@@ -240,7 +258,13 @@ def calculate_avg_float(float_dict):
         
     return int(float_sum / num_sources)
 
+"""
+    This function displays the float data in an organized, easily readable way.
 
+    Parameters
+    ----------
+    Ticker: str, required
+"""
 def display_float_data(ticker):
     float_dict = get_float(ticker)
 
@@ -253,7 +277,21 @@ def display_float_data(ticker):
 
     return
 
+"""
+    Displays filings data in an organized, easily readable manner.
 
+    Parameters
+    ----------
+    ticker: str, required
+
+    tickers_json: str, required
+
+
+    !!!!!!!!!
+        THIS VERSION DIFFERS FROM THE ORIGINAL BECAUSE THE ORIGINAL DOES NOT RETURN THE offerings VARIABLE.
+        I SHOULD CONSIDER CREATING A FUNCTION THAT RETURNS THE LATEST FILINGS DATA SO IT'S REUSABLE.
+    !!!!!!!!!
+"""
 def display_filings_data(ticker):
     tickers_json = fetch_json_settings(filename = const.FULL_TICKER_DATA_JSON_FILE)
     filings_df = get_all_filing_submissions(ticker, tickers_json)
@@ -266,9 +304,212 @@ def display_filings_data(ticker):
     else:
         print("Here is a list of the latest offerings by {} with the most recent {} being filed on {}\n".format(ticker.upper(), offerings.iloc[0]['form'], offerings.iloc[0]['filingDate']))
         print(offerings)
-        
+    return offerings
+
+
+"""
+    MODIFY ticker_data.json TO ADD PADDED VERSION OF CIK
+"""
+def pad_cik_number(tickers_json):
+    modified_tickers = pd.DataFrame(columns = ['cik_str', 'ticker', 'title', 'padded_cik_str'])
+
+    for i in range(len(tickers_json)):
+        item = tickers_json[str(i)]
+        padded_cik = prepare_cik(cik_number = str(item['cik_str']))
+        item['padded_cik_str'] = padded_cik
+        modified_tickers.loc[i] = item.values()
+
+    print(modified_tickers)
+
+    modified_tickers.to_json('full_ticker_data.json', orient = 'index')
+
     return
+
+"""
+    Parameters
+    ----------
+    open_price: double, required
+        Open price of a stock on a given day
+
+    close_price: double, required
+        Closing price of a stock on a given day
+
+    Returns
+    -------
+    A string with the value "Green" if the stock closed higher than it opened OR
+    A string with the value "Red" if the stock closed lower than it opened OR
+    A string with the value "Grey" if the stock closed with the same price as it opened
+"""
+def get_candle_color(open_price, close_price):
+    if close_price > open_price:
+        color = "Green"
+    elif close_price < open_price:
+        color = "Red"
+    else:
+        color = "Grey"
     
+    return color
+
+"""
+    Parameters
+    ----------
+    ticker: str, required
+
+    Returns
+    -------
+    Dataframe with 5 years worth of history for the given ticker. The data included is each day's Open, Close, High, Low prices, Volume, Dividends, and Stock Splits.
+"""
+def get_ticker_historical_data(ticker):
+    yf_ticker = yf.Ticker(ticker)
+    return yf_ticker.history(period="5y")
+
+"""
+    The purpose of this function is to analyze the historical data for a given ticker and identify days with long wicks on the daily chart.
+
+    A wick is a thin line above or below the body of a candle on a candle stick chart. For our purposes, we only care about long wick above the body of 
+    a candle - no matter whether it closed red or green on the day. 
+
+    We are also narrowing down the search by only searching for wicks whose high is less than 1000% yesterday's (or the previous session's) closing price.
+    If we refer to yesterday's close price as X, then we are only looking for days in which the high of the day is less than X * 10 (1000%).
+
+    We also define a 'wick' of interest to us as one in which the Open or Close price of that day (depending on whether it closed red or green), is 15% lower than the
+    high of that day. 
+
+    For example, if a given candle closed green on the day, then we would determine if its wick is of interest to us by the following equation:
+        High - Close >= High * 0.15
+
+    If the day closed red, the equation would be: 
+        High - Open >= High * 0.15
+
+    Parameters
+    ----------
+    historical_data: dataframe, required
+        Dictionary containing all the historical data for a given ticker
+
+    wick_pctg: double, required, default = 0.15
+        Percentage value of how "high" we want the wick to be
+
+    Returns
+    -------
+    A dataframe containing all the days that experience a wick of wick_pctg or higher
+"""
+def get_wick_days(historical_data, wick_pctg = 0.15):
+    wick_days = historical_data[((historical_data["Open"] <= historical_data["Close"]) 
+                        & ((historical_data["High"] - historical_data["Close"]) >= historical_data["High"] * wick_pctg) 
+                        & (historical_data["High"] <= historical_data.iloc[-2]["Close"] * 10)
+                        |
+                        (historical_data["Open"] >= historical_data["Close"]) 
+                        & ((historical_data["High"] - historical_data["Close"]) >= historical_data["High"] * wick_pctg) 
+                        & (historical_data["High"] <= historical_data.iloc[-2]["Close"] * 10))]
+
+    return wick_days
+
+
+"""
+    Parameters
+    ----------
+    dates_of_interest: dataframe, required
+        Dataframe containing only the days that experienced a noticable wick
+
+    Returns
+    -------
+    A modified version of the input dataframe with three new columns: Color, Price_of_Interest, and Types
+        Color refers to whether that day was a green, red, or grey day
+        Price_of_Interest refers to the price we are interested in for that day
+        Types provides the reason why we are interested on this day, which in our case is because it's a wick day
+
+"""
+def add_metadata_to_ticker_df(dates_of_interest):
+    colors = []
+    pois = []
+    types = []
+
+    for index, row in dates_of_interest.iterrows():
+        color = get_candle_color(open_price = row["Open"], close_price = row["Close"])
+        
+        if color == "Green":
+            price = ((row["High"] - row["Close"]) / 2) + row["Close"]
+        else:
+            price = ((row["High"] - row["Open"]) / 2) + row["Open"]
+
+        #print("{} - {}".format(index, price))
+        colors.append(color)
+        pois.append(price)
+        types.append("Wick")
+
+    dates_of_interest = dates_of_interest.assign(Color = colors)
+    dates_of_interest = dates_of_interest.assign(Price_of_Interest = pois)
+    dates_of_interest = dates_of_interest.assign(Types = types)
+
+    return dates_of_interest
+
+"""
+    Parameters
+    ----------
+    historical_data: dataframe, required
+        Dictionary containing all the historical data for a given ticker
+
+    Returns
+    -------
+    A dictionary containing all the relevant data for days that experienced a "gap"
+"""
+def identify_gap_days(historical_data):
+    gap_days = historical_data[(historical_data["Close"] < historical_data.iloc[-2]["Close"] * 10) | (historical_data["Close"] < historical_data.iloc[-2]["Open"] * 10)]
+
+    gap_dict = {}
+    prev_index = None
+    
+    for index, row in gap_days.iterrows():
+        if prev_index is not None:
+            color = get_candle_color(open_price = row["Open"], close_price = row["Close"])
+            prev_color = get_candle_color(open_price = gap_days["Open"][prev_index], close_price = gap_days["Close"][prev_index])
+
+            if prev_color == "Red":
+                prev_price =  gap_days["Close"][prev_index]
+            else:
+                prev_price =  gap_days["Open"][prev_index]
+
+            if color == "Green":
+                curr_price = row["Close"]
+            else:
+                curr_price = row["Open"]
+
+            if (prev_price - curr_price) > (prev_price * 0.05):
+                item = {
+                    "color": color,
+                    "start_date": str(prev_index.date()),
+                    "end_date": str(index.date()),
+                    "price_gap": (prev_price - curr_price),
+                    "type": "Gap",
+                    "retracement_price": curr_price + ((prev_price - curr_price) / 2)
+                }
+
+                gap_dict[str(index.date())] = item
+                #print(str(index.date()))
+        
+        prev_index = index
+
+    gap_df = pd.DataFrame(gap_dict.values())
+    
+    return gap_df
+    
+
+def display_price_data(ticker):
+
+    yf_ticker = yf.Ticker(ticker)
+    historical_data = yf_ticker.history(period="5y")
+
+    dates_of_interest = get_wick_days(historical_data = historical_data)
+    dates_of_interest = add_metadata_to_ticker_df(dates_of_interest = dates_of_interest)
+    print("Daily wicks of interest: ")
+    print(dates_of_interest)
+    print("------------------------------------------------------------------------------------------------------------------------------------------------\n\n")
+
+    gap_days_df = identify_gap_days(historical_data = historical_data)
+    print("Daily gaps of interest")
+    print(gap_days_df)
+    print("------------------------------------------------------------------------------------------------------------------------------------------------\n\n")
+    return
 
 def fetch_latest_filing(ticker):
 
